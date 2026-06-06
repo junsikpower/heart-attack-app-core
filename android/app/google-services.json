@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "744589033510",
+    "firebase_url": "https://heartattack-84f37-default-rtdb.firebaseio.com",
+    "project_id": "heartattack-84f37",
+    "storage_bucket": "heartattack-84f37.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:744589033510:android:0e4ea74d63989ebcf126e7",
+        "android_client_info": {
+          "package_name": "com.heartattack.heart_attack_mvp_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAAPHqm2-IA1K08HSRGuIXvdGe93KexJsk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
