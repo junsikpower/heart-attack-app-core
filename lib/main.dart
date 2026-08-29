@@ -19,11 +19,19 @@ void main() async {
   // Firebase 초기화
   await Firebase.initializeApp();
 
-  // 상태바를 투명하게 만들어 화면을 더 넓게 사용
+  // ── [Edge-to-Edge 모드] 안드로이드 시스템 스크림(Scrim) 제거 ──
+  // 안드로이드 OS가 상태바 뒤에 까만 반투명 배경을 덧칠하는 행위를 원천 차단합니다.
+  // 상태바 아이콘(배터리, 시계)은 그대로 보이되, 우리 앱의 UI(하얀색 PPG 바)가
+  // 아이콘 뒤에서 완전히 비쳐 보이게 되어 펀치홀 카메라 옆까지 빛이 채워집니다.
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+
+  // 상태바와 내비게이션 바를 투명하게 만들어 화면을 더 넓게 사용
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.light, // 다크 배경 위 흰색 아이콘
+      systemNavigationBarColor: Colors.transparent, // 하단 내비게이션 바도 투명화
+      systemNavigationBarIconBrightness: Brightness.light,
     ),
   );
 

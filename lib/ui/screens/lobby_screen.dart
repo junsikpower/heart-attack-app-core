@@ -72,6 +72,7 @@ class _LobbyScreenState extends State<LobbyScreen>
     showDialog(
       context: context,
       barrierDismissible: false, // 바깥 영역 터치로 닫기 금지 (준비 완료/취소 버튼으로만 가능)
+      useSafeArea: false, // [중요] 상태바 영역까지 팝업을 밀어 올려서 초록색 바가 화면 꼭대기에 닿게 함
       builder: (context) => const PreCheckModal(),
     );
   }

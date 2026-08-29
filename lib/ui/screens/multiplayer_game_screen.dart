@@ -9,6 +9,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../providers/heart_rate_provider.dart';
 import '../../providers/multiplayer_provider.dart';
 import '../widgets/waveform_painter.dart';
+import '../widgets/ppg_light_bar.dart'; // [피벗] 전면 카메라 PPG 전용 초록색 광원 바
 
 class MultiplayerGameScreen extends ConsumerStatefulWidget {
   const MultiplayerGameScreen({super.key});
@@ -112,9 +113,19 @@ class _MultiplayerGameScreenState extends ConsumerState<MultiplayerGameScreen>
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF0A0A0A),
-        body: SafeArea(
-          child: Column(
-            children: [
+        body: Stack(
+          children: [
+            // ── [피벗] 전면 카메라 PPG 광원 바 (OLED 초록색 발광 영역) ──
+            const Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: PpgLightBar(),
+            ),
+            // ── 기존 게임 UI (초록색 바 아래에 배치) ──
+            SafeArea(
+              child: Column(
+                children: [
               // ══════════════════════════════════════
               // 상단 헤더: 두 아바타 + 경과 시간
               // ══════════════════════════════════════
@@ -356,8 +367,10 @@ class _MultiplayerGameScreenState extends ConsumerState<MultiplayerGameScreen>
                   ),
                 ),
               ),
-            ],
-          ),
+                ],
+              ),
+            ),
+          ],
         ),
       ), // Scaffold 끝
     ); // PopScope 끝

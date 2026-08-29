@@ -8,6 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:camera/camera.dart';
 import '../../providers/heart_rate_provider.dart';
 import '../screens/matching_screen.dart';
+import 'ppg_light_bar.dart'; // [피벗] 전면 카메라 PPG 전용 초록색 광원 바
 
 class PreCheckModal extends ConsumerStatefulWidget {
   const PreCheckModal({super.key});
@@ -117,26 +118,39 @@ class _PreCheckModalState extends ConsumerState<PreCheckModal> {
         if (didPop) return;
         await _onCancel();
       },
-      child: Dialog(
-        backgroundColor: Colors.transparent,
-        insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-        child: Container(
-          padding: const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1C1C1E),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.5),
-                blurRadius: 20,
-                spreadRadius: 5,
-              ),
-            ],
+      child: Stack(
+        children: [
+          // ── [절대 좌표] 전면 카메라 PPG 광원 바 ──
+          // 모달 창의 위치와 무관하게, 스마트폰 물리 디스플레이의 절대 꼭대기(Y:0)에
+          // 핀을 박아 고정합니다. 어떤 화면이든 카메라 렌즈 바로 옆에 빛이 뿜어집니다.
+          const Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: PpgLightBar(),
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min, // 내용물 크기만큼만 세로 길이 차지
-            children: [
+          // ── 기존 모달 팝업 (초록색 바 아래 중앙에 띄움) ──
+          Dialog(
+            backgroundColor: Colors.transparent,
+            insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1C1C1E),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.5),
+                    blurRadius: 20,
+                    spreadRadius: 5,
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+              const SizedBox(height: 12),
               Text(
                 '카메라 사전 확인',
                 style: GoogleFonts.outfit(
@@ -147,7 +161,7 @@ class _PreCheckModalState extends ConsumerState<PreCheckModal> {
               ),
               const SizedBox(height: 8),
               Text(
-                '플래시가 켜진 후면 카메라 렌즈를\n손가락 끝으로 완전히 덮어주세요.',
+                '화면 상단 하얀색 영역 위에\n손가락 끝을 밀착해 주세요.',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.outfit(
                   fontSize: 14,
@@ -341,10 +355,12 @@ class _PreCheckModalState extends ConsumerState<PreCheckModal> {
                   ),
                 ],
               ),
-            ],
+                ],
+              ),
+            ),
           ),
-        ),
-      ), // Dialog 끝
+        ],
+      ), // Stack 끝
     ); // PopScope 끝
   }
 }

@@ -1,14 +1,15 @@
 // 카메라 하드웨어 제어 및 심박수 측정 엔진
-// [리팩토링] 수제작 DSP 알고리즘을 전면 폐기하고,
-//           전문 PPG 패키지(flutter_ppg)로 교체합니다.
+// [아키텍처 피벗] 후면 플래시(Torch) PPG 방식을 전면 폐기하고,
+//                전면 카메라 + OLED 디스플레이 광원(Display-Illuminated PPG)으로 전환합니다.
 // [안전장치]
-//   - 카메라 노출/초점 강제 잠금 (AE/AF Lock) → 하드웨어 노이즈 차단
+//   - 카메라 노출 보정값(Exposure Offset) 최대치 강제 고정 → 약한 디스플레이 광원 수집 극대화
+//   - 카메라 초점 강제 잠금 (AF Lock) → 하드웨어 노이즈 차단
 //   - StreamController 자원 해제 (Memory Leak 방지)
 //   - isNotEmpty 방어 로직 → 빈 리스트 크래시(StateError) 방지
 // [고도화]
 //   - 산술 평균 폐기 → 중앙값(Median) 추출로 이상치(Outlier) 면역 확보
 //   - EMA(지수 이동 평균) 필터 적용 → 부드럽고 일관된 BPM 수치 유지
-//   - 자원 재사용 구조 → 모달→게임 화면 전환 시 카메라/플래시 유지
+//   - 자원 재사용 구조 → 모달→게임 화면 전환 시 카메라 유지
 
 import 'dart:async';
 import 'package:camera/camera.dart';
@@ -70,11 +71,13 @@ class CameraService {
   double _coldStartCandidateBpm = 0.0; // 콜드 스타트 버퍼: 현재 후보 수치
   int _coldStartStableCount = 0; // 콜드 스타트 버퍼: 안정 유지 프레임 카운터
 
-  /// 카메라를 초기화하고 후면 렌즈 + 플래시를 켠다.
+  /// 전면 카메라를 초기화하고 노출 보정값(Exposure Offset)을 최대치로 강제 고정한다.
+  /// [아키텍처 피벗] 후면 플래시 대신 OLED 디스플레이 광원을 사용하므로,
+  ///   카메라 센서가 약한 빛을 최대한 끌어모을 수 있도록 노출을 극대화합니다.
   /// [자원 재사용] 이미 초기화되어 있으면 중복 초기화하지 않고 즉시 반환한다.
   Future<void> initialize() async {
     // ── 이미 초기화된 상태라면 재초기화 없이 바로 복귀 ──
-    // (모달→게임 화면 전환 시 카메라/플래시가 꺼지지 않고 유지되는 핵심 로직)
+    // (모달→게임 화면 전환 시 카메라가 꺼지지 않고 유지되는 핵심 로직)
     if (_isInitialized &&
         _controller != null &&
         _controller!.value.isInitialized) {
@@ -92,30 +95,39 @@ class CameraService {
         return;
       }
 
-      final backCamera = cameras.firstWhere(
-        (cam) => cam.lensDirection == CameraLensDirection.back,
+      // ── [피벗] 전면 카메라(Front Camera) 탐색 ──
+      // 후면 렌즈 대신 전면 셀피 렌즈를 선택하여 디스플레이 광원 PPG를 수행합니다.
+      final frontCamera = cameras.firstWhere(
+        (cam) => cam.lensDirection == CameraLensDirection.front,
         orElse: () => cameras.first,
       );
 
       _controller = CameraController(
-        backCamera,
+        frontCamera,
         ResolutionPreset.low,
         enableAudio: false,
       );
 
       await _controller!.initialize();
 
-      // ── 플래시(토치) 켜기 ──
-      await _controller!.setFlashMode(FlashMode.torch);
-
-      // ── [핵심] 카메라 노출 및 초점 강제 잠금 (AE/AF Lock) ──
-      // 자동 밝기 조절(AE)이 맥박 파동을 찌그러뜨리는 현상을 원천 차단합니다.
+      // ── [핵심] 카메라 노출 자동화 (AE Auto) ──
+      // 손가락을 렌즈에 대면 내부가 어두워집니다. 이때 카메라가 스스로
+      // '어둡다'고 판단하여 ISO(민감도)를 증폭시키도록 허용합니다.
+      // 이렇게 증폭된 빛은 손가락 피부를 통과한 '순수한 빨간색 빛'뿐이므로,
+      // 결과적으로 빨간색 맥박 신호(Red Glow)가 폭발적으로 선명해집니다.
       try {
-        await _controller!.setExposureMode(ExposureMode.locked);
+        await _controller!.setExposureMode(ExposureMode.auto);
+        debugPrint('[CameraService] 노출 자동(AE Auto) 적용 완료');
+      } catch (e) {
+        debugPrint('[CameraService] 노출 자동 미지원 기기 (무시됨): $e');
+      }
+
+      // ── 카메라 초점 강제 잠금 (AF Lock) ──
+      // 손가락 밀착 상태에서 자동 초점 헌팅을 방지합니다.
+      try {
         await _controller!.setFocusMode(FocusMode.locked);
       } catch (e) {
-        // 일부 저가형 안드로이드 기기는 지원 안할 수 있으나, 앱은 계속 실행됩니다.
-        debugPrint('카메라 노출/초점 잠금 미지원 기기 (무시됨): $e');
+        debugPrint('[CameraService] 초점 잠금 미지원 기기 (무시됨): $e');
       }
 
       _isInitialized = true;
@@ -358,11 +370,8 @@ class CameraService {
           debugPrint('[CameraService] 이미지 스트림 중지 실패 (무시됨): $e');
         }
       }
-      try {
-        await camera.setFlashMode(FlashMode.off);
-      } catch (e) {
-        debugPrint('[CameraService] 플래시 끄기 실패 (무시됨): $e');
-      }
+      // [아키텍처 피벗] 전면 카메라에는 물리 플래시가 존재하지 않으므로
+      // FlashMode 제어 코드가 완전히 제거되었습니다.
     }
     
     await _cleanupStreams();
