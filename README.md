@@ -1,3 +1,38 @@
+# Heart Attack v2 — 1:1 두근 배틀
+
+> 말로 상대의 심장을 두근거리게! 내 심장은 들키지 말고.
+
+1:1 음성 대화 게임입니다. 휴대폰 뒷면 카메라에 손가락을 올려 심박을 재고, 공격과 방어를 번갈아 하면서 **듣는 사람의 심박이 평소보다 오른 만큼** 점수를 얻습니다. 영상·사진 없이 캐릭터(하트 버디)와 토크 카드로 플레이합니다.
+
+- 규칙과 구조 상세: [docs/GAME_DESIGN.md](docs/GAME_DESIGN.md)
+- 테스트 기준 기기: Galaxy A17 (Android 15/16, One UI 7/8)
+
+## 실행 준비
+
+1. `.env` 파일(앱 루트)에 Agora App ID를 넣습니다. App ID만 쓰는 테스트 모드 프로젝트를 사용합니다.
+   ```
+   AGORA_APP_ID=xxxxxxxx
+   ```
+2. Firebase
+   - `android/app/google-services.json`이 있어야 합니다.
+   - Realtime Database 규칙은 [`database.rules.json`](database.rules.json)을 콘솔에 반영합니다. 빠른 매칭에 `queue` 경로와 `ts` 인덱스가 필요합니다.
+3. 실행
+   ```
+   flutter pub get
+   flutter run            # 기기 연결 후
+   flutter build apk      # 설치 파일 생성
+   ```
+
+## 테스트
+
+```
+flutter test     # 점수 규칙 · 카드 덱 · 방 데이터 변환
+```
+
+---
+
+> **아래는 v1(MVP) 개발 기록입니다.** PPG 측정 엔진을 안정화한 과정을 담고 있으며, v2에서 측정 알고리즘은 그대로 유지하고 렌즈만 후면+플래시로 바꿨습니다.
+
 # Heart Attack
 
 A game that quantifies your heartbeat: through conversation, the player who raises the opponent's heart rate first wins. The opponent is either an AI character or another user.

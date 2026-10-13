@@ -1,0 +1,17 @@
+{
+  "rules": {
+    "rooms": {
+      "$code": {
+        ".read": true,
+        ".write": true
+      }
+    },
+    "queue": {
+      ".read": true,
+      ".indexOn": ["ts"],
+      "$uid": {
+        ".write": true
+      }
+    }
+  }
+}

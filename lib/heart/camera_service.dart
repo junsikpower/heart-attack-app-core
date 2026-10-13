@@ -1,8 +1,8 @@
 // 카메라 하드웨어 제어 및 심박수 측정 엔진
-// [아키텍처 피벗] 후면 플래시(Torch) PPG 방식을 전면 폐기하고,
-//                전면 카메라 + OLED 디스플레이 광원(Display-Illuminated PPG)으로 전환합니다.
+// [v2 전면 개편] 턴제 도입으로 측정 시간이 짧아져 후면 카메라 + 플래시(Torch) 방식으로 복귀합니다.
+//   - 심박수 계산 알고리즘(flutter_ppg + 중앙값 + 콜드스타트 + 스파이크 Hold + EMA)은 기존 그대로 유지합니다.
+//   - 변경점은 '어떤 렌즈를 쓰고, 플래시를 언제 켜고 끄는가'뿐입니다.
 // [안전장치]
-//   - 카메라 노출 보정값(Exposure Offset) 최대치 강제 고정 → 약한 디스플레이 광원 수집 극대화
 //   - 카메라 초점 강제 잠금 (AF Lock) → 하드웨어 노이즈 차단
 //   - StreamController 자원 해제 (Memory Leak 방지)
 //   - isNotEmpty 방어 로직 → 빈 리스트 크래시(StateError) 방지
@@ -71,9 +71,8 @@ class CameraService {
   double _coldStartCandidateBpm = 0.0; // 콜드 스타트 버퍼: 현재 후보 수치
   int _coldStartStableCount = 0; // 콜드 스타트 버퍼: 안정 유지 프레임 카운터
 
-  /// 전면 카메라를 초기화하고 노출 보정값(Exposure Offset)을 최대치로 강제 고정한다.
-  /// [아키텍처 피벗] 후면 플래시 대신 OLED 디스플레이 광원을 사용하므로,
-  ///   카메라 센서가 약한 빛을 최대한 끌어모을 수 있도록 노출을 극대화합니다.
+  /// 후면 카메라를 초기화하고 플래시(Torch)를 켠다.
+  /// 플래시 빛이 손가락을 통과하며 생기는 붉은빛의 미세한 밝기 변화로 맥박을 읽는다.
   /// [자원 재사용] 이미 초기화되어 있으면 중복 초기화하지 않고 즉시 반환한다.
   Future<void> initialize() async {
     // ── 이미 초기화된 상태라면 재초기화 없이 바로 복귀 ──
@@ -95,15 +94,15 @@ class CameraService {
         return;
       }
 
-      // ── [피벗] 전면 카메라(Front Camera) 탐색 ──
-      // 후면 렌즈 대신 전면 셀피 렌즈를 선택하여 디스플레이 광원 PPG를 수행합니다.
-      final frontCamera = cameras.firstWhere(
-        (cam) => cam.lensDirection == CameraLensDirection.front,
+      // ── 후면 카메라(Back Camera) 탐색 ──
+      // 휴대폰을 쥐었을 때 검지가 자연스럽게 닿는 뒷면 렌즈를 사용합니다.
+      final backCamera = cameras.firstWhere(
+        (cam) => cam.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
       );
 
       _controller = CameraController(
-        frontCamera,
+        backCamera,
         ResolutionPreset.low,
         enableAudio: false,
       );
@@ -128,6 +127,14 @@ class CameraService {
         await _controller!.setFocusMode(FocusMode.locked);
       } catch (e) {
         debugPrint('[CameraService] 초점 잠금 미지원 기기 (무시됨): $e');
+      }
+
+      // ── 플래시(Torch) 켜기 ──
+      // 측정하는 동안에만 켜고, stopMeasurement()에서 반드시 끕니다. (발열 최소화)
+      try {
+        await _controller!.setFlashMode(FlashMode.torch);
+      } catch (e) {
+        debugPrint('[CameraService] 플래시 미지원 기기 (무시됨): $e');
       }
 
       _isInitialized = true;
@@ -370,8 +377,20 @@ class CameraService {
           debugPrint('[CameraService] 이미지 스트림 중지 실패 (무시됨): $e');
         }
       }
-      // [아키텍처 피벗] 전면 카메라에는 물리 플래시가 존재하지 않으므로
-      // FlashMode 제어 코드가 완전히 제거되었습니다.
+
+      // ── 플래시 끄기 + 카메라 해제 ──
+      // 참조만 끊고 해제하지 않으면 플래시가 켜진 채로 남을 수 있으므로,
+      // 반드시 플래시를 끈 뒤 컨트롤러를 완전히 해제합니다. (다음 측정 시 새로 초기화)
+      try {
+        await camera.setFlashMode(FlashMode.off);
+      } catch (e) {
+        debugPrint('[CameraService] 플래시 끄기 실패 (무시됨): $e');
+      }
+      try {
+        await camera.dispose();
+      } catch (e) {
+        debugPrint('[CameraService] 카메라 해제 실패 (무시됨): $e');
+      }
     }
     
     await _cleanupStreams();

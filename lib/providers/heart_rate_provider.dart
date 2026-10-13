@@ -1,185 +1,125 @@
-// 심박수 전역 상태 관리 파일
-// 역할: CameraService가 수신한 심박수(BPM) 값을 Riverpod을 통해 앱 전체 화면에서 공유
-// [리팩토링] flutter_ppg 패키지 도입에 따라 불필요해진 로그 기능 제거
+// 심박수 전역 상태 (Heart Rate Provider)
+// 역할: 현재 선택된 측정 장치(카메라/워치)의 측정값을 앱 전체에 공유한다.
+// 화면과 게임 로직은 이 provider만 보며, 측정 장치가 무엇인지 신경 쓰지 않는다.
 
-import 'dart:io';
-import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
+import 'dart:async';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:camera/camera.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
-import '../services/camera_service.dart';
+import '../heart/camera_ppg_source.dart';
+import '../heart/heart_rate_source.dart';
+import '../heart/watch_heart_rate_source.dart';
 
-// ─────────────────────────────────────────────────────────
-// HeartRateState: 심박수 관련 모든 상태를 하나의 묶음으로 정의
-// ─────────────────────────────────────────────────────────
+/// 사용 가능한 측정 장치 목록 (워치는 연동 전이라 isAvailable=false)
+final heartSourcesProvider = Provider<Map<HeartSourceKind, HeartRateSource>>((ref) {
+  final sources = {
+    HeartSourceKind.cameraPpg: CameraPpgSource(),
+    HeartSourceKind.watch: WatchHeartRateSource(),
+  };
+  ref.onDispose(() {
+    for (final s in sources.values) {
+      s.dispose();
+    }
+  });
+  return sources;
+});
+
+/// 지금 사용하는 측정 장치 (기본: 카메라)
+final heartSourceKindProvider = StateProvider<HeartSourceKind>(
+  (ref) => HeartSourceKind.cameraPpg,
+);
+
+@immutable
 class HeartRateState {
-  final double bpm; // 현재 심박수 (0이면 미측정 상태)
-  final CameraStatus cameraStatus; // 카메라 상태 (측정 중, 손 없음, 오류 등)
-  final List<double> waveform; // 화면 하단에 그릴 심전도 파형 데이터 목록
-  final bool isMeasuring; // 현재 측정 중인지 여부
-  final double currentRedValue; // 실시간 신호 강도 (filteredIntensity 대체)
-  final bool isRatioPassed; // 신호 품질 통과 여부 (Good/Fair = true)
-  final bool isLogging; // CSV 로그 기록 중 여부
+  final HeartReading reading;
+  final HeartSourceKind source;
+  final bool isMeasuring;
 
   const HeartRateState({
-    this.bpm = 0.0,
-    this.cameraStatus = CameraStatus.idle,
-    this.waveform = const [],
+    this.reading = HeartReading.idle,
+    this.source = HeartSourceKind.cameraPpg,
     this.isMeasuring = false,
-    this.currentRedValue = 0.0,
-    this.isRatioPassed = false,
-    this.isLogging = false,
   });
 
-  HeartRateState copyWith({
-    double? bpm,
-    CameraStatus? cameraStatus,
-    List<double>? waveform,
-    bool? isMeasuring,
-    double? currentRedValue,
-    bool? isRatioPassed,
-    bool? isLogging,
-  }) {
-    return HeartRateState(
-      bpm: bpm ?? this.bpm,
-      cameraStatus: cameraStatus ?? this.cameraStatus,
-      waveform: waveform ?? this.waveform,
-      isMeasuring: isMeasuring ?? this.isMeasuring,
-      currentRedValue: currentRedValue ?? this.currentRedValue,
-      isRatioPassed: isRatioPassed ?? this.isRatioPassed,
-      isLogging: isLogging ?? this.isLogging,
-    );
-  }
+  double get bpm => reading.bpm;
+  HeartSignal get signal => reading.signal;
+  bool get isValid => reading.isValid;
+
+  HeartRateState copyWith({HeartReading? reading, HeartSourceKind? source, bool? isMeasuring}) =>
+      HeartRateState(
+        reading: reading ?? this.reading,
+        source: source ?? this.source,
+        isMeasuring: isMeasuring ?? this.isMeasuring,
+      );
 }
 
-// ─────────────────────────────────────────────────────────
-// HeartRateNotifier: HeartRateState 값을 변경하는 로직이 담긴 클래스
-// ─────────────────────────────────────────────────────────
-class HeartRateNotifier extends StateNotifier<HeartRateState>
-    with WidgetsBindingObserver {
-  final CameraService _cameraService = CameraService();
-
-  HeartRateNotifier() : super(const HeartRateState()) {
-    _cameraService.onBpmUpdated = _onBpmUpdated;
-    _cameraService.onStatusChanged = _onStatusChanged;
-    _cameraService.onWaveformUpdated = _onWaveformUpdated;
-    _cameraService.onRgbUpdated = _onRgbUpdated;
-
-    // [우주 방어 1] 앱 생명주기 레이더 장착 (홈 버튼, 전원 버튼 감지)
+class HeartRateNotifier extends StateNotifier<HeartRateState> with WidgetsBindingObserver {
+  HeartRateNotifier(this._ref) : super(const HeartRateState()) {
     WidgetsBinding.instance.addObserver(this);
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    // 앱이 백그라운드로 숨거나(홈 버튼) 화면이 꺼질 때 즉각 카메라 셧다운
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.hidden) {
-      if (this.state.isMeasuring) {
-        stopMeasurement();
+  final Ref _ref;
+  StreamSubscription<HeartReading>? _sub;
+  HeartRateSource? _active;
+
+  /// 측정 시작 (이미 측정 중이면 그대로 유지)
+  Future<void> start() async {
+    if (state.isMeasuring) return;
+    final kind = _ref.read(heartSourceKindProvider);
+    final source = _ref.read(heartSourcesProvider)[kind]!;
+    _active = source;
+    await _sub?.cancel();
+    _sub = source.readings.listen((r) {
+      if (mounted) state = state.copyWith(reading: r);
+    });
+    state = state.copyWith(
+      source: kind,
+      isMeasuring: true,
+      reading: const HeartReading(signal: HeartSignal.preparing),
+    );
+    try {
+      await source.start();
+    } catch (e) {
+      debugPrint('[HeartRate] 측정 시작 실패: $e');
+      if (mounted) {
+        state = state.copyWith(reading: const HeartReading(signal: HeartSignal.error));
       }
     }
   }
 
-  // ── 트랜지션 쉴드 제어 ──
-  void setTransitioning(bool val) {
-    _cameraService.setTransitioning(val);
+  /// 측정 종료 (플래시도 함께 꺼짐)
+  Future<void> stop() async {
+    if (!state.isMeasuring) return;
+    state = state.copyWith(isMeasuring: false, reading: HeartReading.idle);
+    await _sub?.cancel();
+    _sub = null;
+    await _active?.stop();
+    _active = null;
   }
 
-  // ── BPM 업데이트: 패키지가 이미 안정화된 값을 주므로 그대로 전달 ──
-  void _onBpmUpdated(double bpm) {
-    state = state.copyWith(bpm: bpm);
-  }
-
-  // ── 카메라 상태 변경: 딜레이(Throttle) 없이 즉각 반영 ──
-  void _onStatusChanged(CameraStatus status) {
-    state = state.copyWith(cameraStatus: status);
-  }
-
-  void _onWaveformUpdated(List<double> waveform) {
-    state = state.copyWith(waveform: waveform);
-  }
-
-  // ── 신호 강도 및 품질 업데이트 ──
-  void _onRgbUpdated(double r, double g, double b, bool passed) {
-    state = state.copyWith(currentRedValue: r, isRatioPassed: passed);
-  }
-
-  // ── 측정 시작 ──
-  Future<void> startMeasurement() async {
-    state = state.copyWith(isMeasuring: true, bpm: 0.0, waveform: []);
-    await _cameraService.initialize();
-    await _cameraService.startMeasurement();
-  }
-
-  // ── 측정 중지 ──
-  Future<void> stopMeasurement() async {
-    await _cameraService.stopMeasurement();
-    state = state.copyWith(
-      isMeasuring: false,
-      bpm: 0.0,
-      waveform: [],
-      cameraStatus: CameraStatus.idle,
-    );
-  }
-
-  // ── 화면 이탈 시 사용하는 공통 측정 종료 절차 ──
-  Future<void> endMeasurementSession() async {
-    setTransitioning(true);
-    await stopMeasurement();
-  }
-
-  // ── 로깅 기능 ──
-  void startLogging() {
-    _cameraService.startLogging();
-    state = state.copyWith(isLogging: true);
-  }
-
-  Future<void> stopAndShareLog() async {
-    final String csvData = _cameraService.stopAndGetCsv();
-    state = state.copyWith(isLogging: false);
-
-    if (csvData.isEmpty) return;
-
-    try {
-      final directory = await getTemporaryDirectory();
-      final String filePath = '${directory.path}/ppg_debug_log.csv';
-      final File file = File(filePath);
-      await file.writeAsString(csvData);
-
-      // share_plus 패키지 (파일 공유)
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(filePath)],
-          text: '심박수 30대 저하 원인 디버그 로그 데이터 (CSV)',
-        ),
-      );
-    } catch (e) {
-      debugPrint('로그 공유 오류: $e');
+  // 앱이 백그라운드로 가면 카메라/플래시를 즉시 끈다 (발열·배터리 보호)
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+      // Android는 hidden → paused 순서로 두 번 알려주므로, 첫 번째 기록을 덮어쓰지 않는다
+      if (this.state.isMeasuring) _wasMeasuringBeforePause = true;
+      stop();
+    } else if (state == AppLifecycleState.resumed && _wasMeasuringBeforePause) {
+      _wasMeasuringBeforePause = false;
+      start();
     }
   }
 
-  // ── 카메라 컨트롤러 접근자 ──
-  CameraController? get cameraController => _cameraService.controller;
-  bool get isCameraInitialized => _cameraService.isInitialized;
+  bool _wasMeasuringBeforePause = false;
 
   @override
   void dispose() {
-    // [우주 방어 2] 프로바이더 소멸 시 무조건 카메라를 끄도록 생명주기 단단히 결속
-    _cameraService.stopMeasurement();
-    _cameraService.dispose();
     WidgetsBinding.instance.removeObserver(this);
+    _sub?.cancel();
+    _active?.stop();
     super.dispose();
   }
 }
 
-// ─────────────────────────────────────────────────────────
-// heartRateProvider: 앱 전체에서 심박수 상태에 접근할 때 사용하는 전역 변수
-// ─────────────────────────────────────────────────────────
-final heartRateProvider =
-    StateNotifierProvider<HeartRateNotifier, HeartRateState>(
-      (ref) => HeartRateNotifier(),
-    );
+final heartRateProvider = StateNotifierProvider<HeartRateNotifier, HeartRateState>(
+  (ref) => HeartRateNotifier(ref),
+);

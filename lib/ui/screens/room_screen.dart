@@ -1,13 +1,18 @@
-// 방 코드 입력 화면 (Room Screen)
-// 역할: 멀티플레이 모드에서 방을 만들거나 참가하는 화면.
-// '방 만들기'를 누르면 6자리 코드를 생성하고, '참가하기'를 누르면 코드를 입력하고 입장.
+// 대기실 — 상대를 기다리고, 둘 다 손가락 측정이 잡히면 자동으로 시작
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_fonts/google_fonts.dart';
-import '../../providers/multiplayer_provider.dart';
-import 'multiplayer_game_screen.dart';
+import '../../core/rules.dart';
+import '../../core/theme.dart';
+import '../../multiplayer/room_models.dart';
+import '../../providers/heart_rate_provider.dart';
+import '../../providers/session_provider.dart';
+import '../nav.dart';
+import '../widgets/common.dart';
+import '../widgets/game_dialogs.dart';
+import '../widgets/heart_buddy.dart';
+import 'battle_screen.dart';
 
 class RoomScreen extends ConsumerStatefulWidget {
   const RoomScreen({super.key});
@@ -17,404 +22,312 @@ class RoomScreen extends ConsumerStatefulWidget {
 }
 
 class _RoomScreenState extends ConsumerState<RoomScreen> {
-  final TextEditingController _codeController = TextEditingController();
-  bool _isLoading = false;
-  String? _createdRoomCode; // 내가 만든 방 코드 (화면에 표시용)
+  bool _leaving = false;
 
-  @override
-  void dispose() {
-    _codeController.dispose();
-    super.dispose();
-  }
-
-  // ── 방 만들기 (호스트) ──
-  Future<void> _createRoom() async {
-    setState(() => _isLoading = true);
-    try {
-      final roomId = await ref.read(multiplayerProvider.notifier).createRoom(
-        userId: 'user_${DateTime.now().millisecondsSinceEpoch}',
-        myBpmGetter: () => 0, // 게임 화면 진입 후 실제 BPM으로 교체됨
-      );
-      setState(() {
-        _createdRoomCode = roomId;
-        _isLoading = false;
-      });
-    } catch (e) {
-      setState(() => _isLoading = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('방 생성 실패: $e')),
-        );
-      }
-    }
-  }
-
-  // ── 방 참가 (게스트) ──
-  Future<void> _joinRoom() async {
-    final code = _codeController.text.trim();
-    if (code.length != 6) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('6자리 방 코드를 입력해주세요')),
-      );
-      return;
-    }
-
-    setState(() => _isLoading = true);
-    try {
-      await ref.read(multiplayerProvider.notifier).joinRoom(
-        roomCode: code,
-        userId: 'user_${DateTime.now().millisecondsSinceEpoch}',
-        myBpmGetter: () => 0,
-      );
-
-      if (mounted) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const MultiplayerGameScreen()),
-        );
-      }
-    } catch (e) {
-      setState(() => _isLoading = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('방 참가 실패: $e')),
-        );
-      }
-    }
+  Future<void> _leave({bool ask = true}) async {
+    if (_leaving) return;
+    if (ask && !await confirmLeave(context, message: '대기실에서 나갈까요?')) return;
+    _leaving = true;
+    await ref.read(sessionProvider.notifier).leave();
+    if (mounted) Navigator.of(context).pop();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0A0A0A),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0A0A0A),
-        title: Text(
-          '멀티플레이',
-          style: GoogleFonts.outfit(fontWeight: FontWeight.w600),
-        ),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios, size: 20),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-      ),
-      body: SafeArea(
-        child: _isLoading
-            ? const Center(
-                child: CircularProgressIndicator(color: Color(0xFFFF2D55)),
-              )
-            : SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    const SizedBox(height: 24),
+    final session = ref.watch(sessionProvider);
+    final heart = ref.watch(heartRateProvider);
+    final levels = ref.watch(voiceLevelsProvider).valueOrNull;
+    final controller = ref.read(sessionProvider.notifier);
+    final room = session.room;
 
-                    // ── 아이콘 ──
-                    Container(
-                      width: 80,
-                      height: 80,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: const Color(0xFF1C1C1E),
-                        boxShadow: [
-                          BoxShadow(
-                            color: const Color(0xFFFF2D55).withValues(alpha: 0.3),
-                            blurRadius: 30,
-                            spreadRadius: 5,
-                          ),
-                        ],
+    // 게임이 시작되면 배틀 화면으로
+    ref.listen(sessionProvider.select((s) => s.room?.status), (prev, next) {
+      if (next == RoomStatus.playing && mounted) {
+        Navigator.of(context).pushReplacement(fadeRoute(const BattleScreen()));
+      }
+    });
+
+    final myUid = controller.myUid;
+    final me = room?.player(myUid);
+    final opponent = room?.player(room.opponentOf(myUid));
+    final bothReady = (me?.ready ?? false) && (opponent?.ready ?? false) && (opponent?.online ?? false);
+
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _leave();
+      },
+      child: Scaffold(
+        body: AppBackdrop(
+          tint: AppColors.mint,
+          child: Stack(
+            children: [
+              ListView(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+                children: [
+                  Row(
+                    children: [
+                      RoundIconButton(icon: Icons.close_rounded, onPressed: _leave),
+                      const SizedBox(width: 12),
+                      Text('대기실', style: AppText.display(26)),
+                      const Spacer(),
+                      if (session.code != null) _CodeChip(code: session.code!),
+                    ],
+                  ),
+                  const SizedBox(height: 22),
+
+                  // ── 두 사람 자리 ──
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _Seat(
+                          player: me,
+                          isMe: true,
+                          speaking: levels?.mine ?? 0,
+                        ),
                       ),
-                      child: const Icon(
-                        Icons.favorite,
-                        color: Color(0xFFFF2D55),
-                        size: 40,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _Seat(
+                          player: opponent,
+                          isMe: false,
+                          speaking: levels?.theirs ?? 0,
+                          code: session.code,
+                        ),
                       ),
-                    ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
 
-                    const SizedBox(height: 32),
-
-                    Text(
-                      '상대방과 연결하기',
-                      style: GoogleFonts.outfit(
-                        fontSize: 24,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white,
-                      ),
-                    ),
-
-                    const SizedBox(height: 8),
-
-                    Text(
-                      '방을 만들고 코드를 공유하거나\n상대방의 코드를 입력해 참가하세요',
-                      textAlign: TextAlign.center,
-                      style: GoogleFonts.outfit(
-                        fontSize: 14,
-                        color: Colors.white.withValues(alpha: 0.45),
-                        height: 1.6,
-                      ),
-                    ),
-
-                    const SizedBox(height: 48),
-
-                    // ────────────────────────────
-                    // 섹션 1: 방 만들기
-                    // ────────────────────────────
-                    _buildSectionCard(
-                      title: '방 만들기',
-                      subtitle: '코드를 상대방에게 공유하세요',
-                      child: Column(
-                        children: [
-                          // 생성된 방 코드 표시
-                          if (_createdRoomCode != null) ...[
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 24, vertical: 16),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF0A0A0A),
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: const Color(0xFFFF2D55).withValues(alpha: 0.4),
-                                ),
-                              ),
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                                    _createdRoomCode!,
-                                    style: GoogleFonts.outfit(
-                                      fontSize: 28,
-                                      fontWeight: FontWeight.w800,
-                                      color: Colors.white,
-                                      letterSpacing: 6,
-                                    ),
+                  // ── 진행 안내 ──
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 300),
+                    child: bothReady
+                        ? SoftCard(
+                            key: const ValueKey('go'),
+                            color: AppColors.mintSoft,
+                            borderColor: AppColors.mint.withValues(alpha: 0.3),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.favorite_rounded, color: AppColors.mint),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    '둘 다 준비 완료! ${GameRules.lobbyReadyHoldSeconds}초 뒤 시작해요.\n손가락은 그대로 두세요.',
+                                    style: AppText.body(14.5, weight: FontWeight.w700),
                                   ),
-                                  // 클립보드 복사 버튼
-                                  GestureDetector(
-                                    onTap: () {
-                                      Clipboard.setData(ClipboardData(
-                                          text: _createdRoomCode!));
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                            content: Text('방 코드가 복사되었습니다!')),
-                                      );
-                                    },
-                                    child: const Icon(
-                                      Icons.copy_rounded,
-                                      color: Color(0xFFFF2D55),
-                                      size: 22,
-                                    ),
-                                  ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
-                            const SizedBox(height: 12),
-                            Text(
-                              '상대방이 입장하면 자동으로 시작됩니다',
-                              style: GoogleFonts.outfit(
-                                fontSize: 12,
-                                color: Colors.white.withValues(alpha: 0.35),
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-                            // 방 코드를 공유하고 직접 게임 화면으로 이동
-                            _buildButton(
-                              label: '게임 시작',
-                              onTap: () {
-                                Navigator.of(context).pushReplacement(
-                                  MaterialPageRoute(
-                                      builder: (_) => const MultiplayerGameScreen()),
-                                );
-                              },
-                              isPrimary: true,
-                            ),
-                          ] else ...[
-                            _buildButton(
-                              label: '방 만들기',
-                              onTap: _createRoom,
-                              isPrimary: true,
-                            ),
-                          ],
-                        ],
+                          )
+                        : _FingerGuide(key: const ValueKey('guide'), waitingForOpponent: opponent == null),
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      if (heart.isMeasuring) SensorPill(heart: heart) else const Chip2('상대가 오면 측정을 시작해요'),
+                      const Spacer(),
+                      RoundIconButton(
+                        icon: session.muted ? Icons.mic_off_rounded : Icons.mic_rounded,
+                        color: session.muted ? AppColors.coral : null,
+                        tooltip: '마이크',
+                        onPressed: controller.toggleMute,
                       ),
-                    ),
-
-                    const SizedBox(height: 20),
-
-                    // ── OR 구분선 ──
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Divider(
-                              color: Colors.white.withValues(alpha: 0.1)),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16),
-                          child: Text(
-                            'OR',
-                            style: GoogleFonts.outfit(
-                              fontSize: 12,
-                              color: Colors.white.withValues(alpha: 0.3),
-                              letterSpacing: 2,
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: Divider(
-                              color: Colors.white.withValues(alpha: 0.1)),
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 20),
-
-                    // ────────────────────────────
-                    // 섹션 2: 방 참가하기
-                    // ────────────────────────────
-                    _buildSectionCard(
-                      title: '방 참가하기',
-                      subtitle: '상대방에게 받은 6자리 코드를 입력하세요',
-                      child: Column(
-                        children: [
-                          TextField(
-                            controller: _codeController,
-                            keyboardType: TextInputType.number,
-                            maxLength: 6,
-                            textAlign: TextAlign.center,
-                            style: GoogleFonts.outfit(
-                              fontSize: 24,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white,
-                              letterSpacing: 8,
-                            ),
-                            decoration: InputDecoration(
-                              counterText: '',
-                              hintText: '000000',
-                              hintStyle: GoogleFonts.outfit(
-                                fontSize: 24,
-                                color: Colors.white.withValues(alpha: 0.15),
-                                letterSpacing: 8,
-                              ),
-                              filled: true,
-                              fillColor: const Color(0xFF0A0A0A),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide(
-                                  color: Colors.white.withValues(alpha: 0.1),
-                                ),
-                              ),
-                              enabledBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide(
-                                  color: Colors.white.withValues(alpha: 0.1),
-                                ),
-                              ),
-                              focusedBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12),
-                                borderSide: const BorderSide(
-                                  color: Color(0xFFFF2D55),
-                                  width: 1.5,
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          _buildButton(
-                            label: '참가하기',
-                            onTap: _joinRoom,
-                            isPrimary: false,
-                          ),
-                        ],
-                      ),
-                    ),
+                    ],
+                  ),
+                  if (session.voiceError != null) ...[
+                    const SizedBox(height: 10),
+                    Text('음성 연결 실패: ${session.voiceError}',
+                        style: AppText.body(12.5, color: AppColors.coral)),
                   ],
-                ),
+                ],
               ),
+              if (session.abortReason != null)
+                AbortOverlay(reason: session.abortReason!, onExit: () => _leave(ask: false)),
+            ],
+          ),
+        ),
       ),
     );
   }
+}
 
-  // ── 섹션 카드 위젯 ──
-  Widget _buildSectionCard({
-    required String title,
-    required String subtitle,
-    required Widget child,
-  }) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
+class _CodeChip extends StatelessWidget {
+  final String code;
+  const _CodeChip({required this.code});
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: () {
+      Clipboard.setData(ClipboardData(text: code));
+      showToast(context, '방 코드 $code 를 복사했어요');
+    },
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF1C1C1E),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+        color: AppColors.paper,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.line),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            title,
-            style: GoogleFonts.outfit(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-              color: Colors.white,
+          Text(code, style: AppText.display(18).copyWith(letterSpacing: 3)),
+          const SizedBox(width: 6),
+          const Icon(Icons.copy_rounded, size: 16, color: AppColors.inkSoft),
+        ],
+      ),
+    ),
+  );
+}
+
+class _Seat extends StatelessWidget {
+  final RoomPlayer? player;
+  final bool isMe;
+  final double speaking;
+  final String? code;
+
+  const _Seat({required this.player, required this.isMe, this.speaking = 0, this.code});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = player;
+    if (p == null) {
+      return SoftCard(
+        padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 12),
+        color: AppColors.paper.withValues(alpha: 0.7),
+        child: Column(
+          children: [
+            const SizedBox(
+              width: 70,
+              height: 70,
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2.5, color: AppColors.inkFaint)),
             ),
+            const SizedBox(height: 12),
+            Text('기다리는 중', style: AppText.display(18, color: AppColors.inkSoft)),
+            const SizedBox(height: 4),
+            Text(code != null ? '친구에게 코드 $code' : '',
+                textAlign: TextAlign.center, style: AppText.body(12, color: AppColors.inkFaint)),
+          ],
+        ),
+      );
+    }
+    final ready = p.ready && p.online;
+    return SoftCard(
+      padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 12),
+      borderColor: ready ? AppColors.mint.withValues(alpha: 0.5) : null,
+      child: Column(
+        children: [
+          HeartBuddy(colorIndex: p.colorIndex, size: 70, speaking: speaking, dimmed: !p.online),
+          const SizedBox(height: 6),
+          Text(p.nickname, maxLines: 1, overflow: TextOverflow.ellipsis, style: AppText.display(18)),
+          const SizedBox(height: 6),
+          Chip2(
+            !p.online
+                ? '연결 끊김'
+                : ready
+                ? '준비 완료'
+                : (isMe ? '손가락 대기' : '측정 준비 중'),
+            color: !p.online ? AppColors.inkFaint : (ready ? AppColors.mint : AppColors.amber),
+            icon: ready ? Icons.check_circle_rounded : Icons.touch_app_rounded,
           ),
-          const SizedBox(height: 4),
-          Text(
-            subtitle,
-            style: GoogleFonts.outfit(
-              fontSize: 12,
-              color: Colors.white.withValues(alpha: 0.4),
-            ),
-          ),
-          const SizedBox(height: 16),
-          child,
+          if (isMe) ...[
+            const SizedBox(height: 4),
+            Text('나', style: AppText.body(11.5, color: AppColors.inkFaint)),
+          ],
         ],
       ),
     );
   }
+}
 
-  // ── 버튼 위젯 ──
-  Widget _buildButton({
-    required String label,
-    required VoidCallback onTap,
-    required bool isPrimary,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: double.infinity,
-        height: 50,
-        decoration: BoxDecoration(
-          gradient: isPrimary
-              ? const LinearGradient(
-                  colors: [Color(0xFFFF2D55), Color(0xFFFF6B8A)],
-                  begin: Alignment.centerLeft,
-                  end: Alignment.centerRight,
-                )
-              : null,
-          color: isPrimary ? null : const Color(0xFF2C2C2E),
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: isPrimary
-              ? [
-                  BoxShadow(
-                    color: const Color(0xFFFF2D55).withValues(alpha: 0.4),
-                    blurRadius: 16,
-                    offset: const Offset(0, 6),
-                  ),
-                ]
-              : null,
+/// 후면 카메라 손가락 위치 안내
+class _FingerGuide extends StatelessWidget {
+  final bool waitingForOpponent;
+  const _FingerGuide({super.key, required this.waitingForOpponent});
+
+  @override
+  Widget build(BuildContext context) => SoftCard(
+    child: Row(
+      children: [
+        const _PhoneBackIllustration(),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('손가락을 뒷면 카메라에', style: AppText.display(19)),
+              const SizedBox(height: 6),
+              Text(
+                '휴대폰을 쥔 손의 검지를 카메라와 플래시 위에 살짝 덮어주세요. 꾹 누르면 오히려 잘 안 잡혀요.',
+                style: AppText.body(13.5, color: AppColors.inkSoft),
+              ),
+              if (waitingForOpponent) ...[
+                const SizedBox(height: 8),
+                Text('플래시는 상대가 들어오면 켜져요.',
+                    style: AppText.body(12.5, color: AppColors.inkFaint, weight: FontWeight.w600)),
+              ],
+            ],
+          ),
         ),
-        child: Center(
-          child: Text(
-            label,
-            style: GoogleFonts.outfit(
-              fontSize: 15,
-              fontWeight: FontWeight.w600,
-              color: Colors.white,
+      ],
+    ),
+  );
+}
+
+class _PhoneBackIllustration extends StatelessWidget {
+  const _PhoneBackIllustration();
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 64,
+    height: 104,
+    child: Stack(
+      children: [
+        // 휴대폰 뒷면
+        Container(
+          width: 64,
+          height: 104,
+          decoration: BoxDecoration(
+            color: AppColors.lilacSoft,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.lilac.withValues(alpha: 0.4), width: 2),
+          ),
+        ),
+        // 카메라 섬 (갤럭시처럼 세로 렌즈 배열)
+        Positioned(
+          left: 10,
+          top: 10,
+          child: Column(
+            children: List.generate(
+              3,
+              (i) => Container(
+                margin: const EdgeInsets.only(bottom: 4),
+                width: 13,
+                height: 13,
+                decoration: BoxDecoration(
+                  color: AppColors.ink.withValues(alpha: 0.8),
+                  shape: BoxShape.circle,
+                ),
+              ),
             ),
           ),
         ),
-      ),
-    );
-  }
+        // 손가락
+        Positioned(
+          left: 2,
+          top: 4,
+          child: Container(
+            width: 30,
+            height: 58,
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFC9B0).withValues(alpha: 0.92),
+              borderRadius: BorderRadius.circular(15),
+              border: Border.all(color: const Color(0xFFF4A98A), width: 1.5),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
 }

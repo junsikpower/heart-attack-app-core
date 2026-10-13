@@ -1,8 +1,8 @@
 name: heart_attack_mvp_app
-description: "Heart Attack MVP - 심박수 기반 대화 게임"
+description: "Heart Attack - 말로 상대의 심장을 두근거리게 하는 1:1 턴제 보이스 게임"
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 2.0.0+2
 
 environment:
   sdk: ^3.11.4
@@ -12,34 +12,23 @@ dependencies:
 
   cupertino_icons: ^1.0.8
 
-  # ── 상태 관리 (State Management) ──
-  flutter_riverpod: ^2.6.1       # 중앙 데이터 창고 (Riverpod)
+  # ── 상태 관리 ──
+  flutter_riverpod: ^2.6.1       # 앱 전역 상태 창고 (Riverpod)
 
-  # ── 카메라 (심박수 측정 엔진) ──
-  camera: ^0.11.1                # 카메라 프레임 스트림 및 플래시 제어
-  flutter_ppg: ^0.2.4            # 전문 PPG 심박수 측정 패키지 (피크 검출, 이상치 제거, 품질 평가)
+  # ── 심박 측정 (카메라 PPG) ──
+  camera: ^0.11.1                # 후면 카메라 프레임 스트림 + 플래시 제어
+  flutter_ppg: ^0.2.4            # PPG 신호 처리 (기존 측정 알고리즘 유지)
 
-  # ── Firebase (실시간 채팅 & 심박수 동기화) ──
+  # ── 멀티플레이 ──
   firebase_core: ^3.13.0
-  firebase_database: ^11.3.5     # 실시간 데이터 공유 (RTDB)
+  firebase_database: ^11.3.5     # 방, 매칭, 턴 진행, 심박 동기화 (Realtime Database)
+  agora_rtc_engine: ^6.5.2       # 1:1 음성 통화 (영상 없음)
+  permission_handler: ^12.0.1    # 마이크 권한 요청
 
-  # ── 음성 통화 ──
-  agora_rtc_engine: ^6.5.2       # Agora 음성 채널 연결
-
-  # ── 애니메이션 ──
-  lottie: ^3.3.1                 # 로비 하트 애니메이션
-  google_fonts: ^6.2.1           # 프리미엄 폰트 (Outfit, Inter 등)
-  share_plus: ^13.1.0
-  path_provider: ^2.1.5
-  flutter_dotenv: ^6.0.1
-  google_generative_ai: ^0.4.7
-  speech_to_text: ^7.4.0
-  flutter_tts: ^4.2.5
-  just_audio: ^0.10.5
-  dart_openai: ^6.1.1
-  cloud_firestore: ^5.6.12
-  permission_handler: ^12.0.1
-  screen_brightness: ^2.1.9
+  # ── 디자인 / 기타 ──
+  google_fonts: ^6.2.1           # Jua(제목) + Noto Sans KR(본문)
+  flutter_dotenv: ^6.0.1         # .env의 AGORA_APP_ID 로드
+  shared_preferences: ^2.3.2     # 닉네임/캐릭터 색 저장
 
 dev_dependencies:
   flutter_test:
